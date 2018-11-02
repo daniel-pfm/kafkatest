@@ -1,7 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
+using Confluent.Kafka;
 using Microsoft.AspNetCore.Mvc;
 
 namespace kafkatest.Controllers
@@ -10,36 +9,72 @@ namespace kafkatest.Controllers
     [ApiController]
     public class ValuesController : ControllerBase
     {
-        // GET api/values
-        [HttpGet]
-        public ActionResult<IEnumerable<string>> Get()
-        {
-            return new string[] { "value1", "value2" };
-        }
-
         // GET api/values/5
-        [HttpGet("{id}")]
-        public ActionResult<string> Get(int id)
+        [HttpGet]
+        public ActionResult<string> Get()
         {
-            return "value";
+            var conf = new ConsumerConfig
+            { 
+                GroupId = "test-consumer-group",
+                BootstrapServers = "confluence-cp-kafka-headless:9092",
+                // Note: The AutoOffsetReset property determines the start offset in the event
+                // there are not yet any committed offsets for the consumer group for the
+                // topic/partitions of interest. By default, offsets are committed
+                // automatically, so in this example, consumption will only start from the
+                // eariest message in the topic 'my-topic' the first time you run the program.
+                AutoOffsetReset = AutoOffsetResetType.Earliest
+            };
+
+            using (var c = new Consumer<Ignore, string>(conf))
+            {
+                c.Subscribe("test-topic");
+
+                bool consuming = true;
+                // The client will automatically recover from non-fatal errors. You typically
+                // don't need to take any action unless an error is marked as fatal.
+                c.OnError += (_, e) => consuming = !e.IsFatal;
+
+                while (consuming)
+                {
+                    try
+                    {
+                        var cr = c.Consume();
+                        return $"Consumed message '{cr.Value}' at: '{cr.TopicPartitionOffset}'.";
+                    }
+                    catch (ConsumeException e)
+                    {
+                        return $"Error occured: {e.Error.Reason}";
+                    }
+                }
+            
+                // Ensure the consumer leaves the group cleanly and final offsets are committed.
+                c.Close();
+            }
+
+            return "nothing found";
         }
 
         // POST api/values
         [HttpPost]
-        public void Post([FromBody] string value)
+        public async Task<ActionResult<string>> Post([FromBody] string value)
         {
-        }
+            var config = new ProducerConfig {BootstrapServers = "confluence-cp-kafka-headless:9092"};
 
-        // PUT api/values/5
-        [HttpPut("{id}")]
-        public void Put(int id, [FromBody] string value)
-        {
-        }
+            // A Producer for sending messages with null keys and UTF-8 encoded values.
+            using (var p = new Producer<Null, string>(config))
+            {
+                try
+                {
+                    var dr = await p.ProduceAsync("test-topic", new Message<Null, string> {Value = value});
+                    return $"Delivered '{dr.Value}' to '{dr.TopicPartitionOffset}'";
+                }
+                catch (KafkaException e)
+                {
+                    Console.WriteLine($"Delivery failed: {e.Error.Reason}");
+                }
+            }
 
-        // DELETE api/values/5
-        [HttpDelete("{id}")]
-        public void Delete(int id)
-        {
+            return "something went wrong";
         }
     }
 }
